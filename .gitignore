@@ -42,3 +42,6 @@ desktop.ini
 
 # ---- leftovers -----------------------------------------------------------
 uv.lock.bak
+
+# ---- local test suite (kept on disk, not versioned) ----------------------
+tests/
