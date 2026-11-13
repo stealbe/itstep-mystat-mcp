@@ -16,11 +16,21 @@ dependencies = [
     "pillow>=10.0",
 ]
 
+[project.scripts]
+itstep-mystat-mcp = "mystat.cli:main"
+
 [dependency-groups]
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.24",
 ]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["mystat"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
@@ -28,4 +38,4 @@ testpaths = ["tests"]
 filterwarnings = ["ignore::DeprecationWarning"]
 
 [tool.uv]
-package = false
+package = true

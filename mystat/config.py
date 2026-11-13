@@ -1,8 +1,11 @@
 """Configuration loading and validation.
 
-All paths are resolved relative to the project root (the directory that
-contains ``server.py``), never relative to the process working directory:
-an MCP client may start the server from anywhere.
+All paths are resolved relative to a fixed base directory, never relative to
+the process working directory: an MCP client may start the server from
+anywhere. For a development checkout the base is the project root; for an
+installed tool it is the per-user config directory
+(``%APPDATA%\\itstep-mystat-mcp``), so nothing is ever written into
+``site-packages``.
 """
 
 from __future__ import annotations
@@ -13,7 +16,42 @@ from pathlib import Path
 
 from dotenv import dotenv_values
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
+def _looks_like_checkout(root: Path) -> bool:
+    """True when ``root`` is a source tree rather than a site-packages dir."""
+    return (root / "pyproject.toml").is_file() and (root / "mystat").is_dir()
+
+
+_CANDIDATE_ROOT = Path(__file__).resolve().parents[1]
+
+#: Development checkout directory, or ``None`` when the package is installed
+#: (for an installed tool ``parents[1]`` points into ``site-packages``, which
+#: must never receive the cache or the config).
+PROJECT_ROOT: Path | None = _CANDIDATE_ROOT if _looks_like_checkout(_CANDIDATE_ROOT) else None
+
+
+def app_config_dir() -> Path:
+    """Per-user config directory for an installed copy of the server."""
+    base = os.environ.get("APPDATA") or os.environ.get("XDG_CONFIG_HOME")
+    root = Path(base) if base else Path.home() / ".config"
+    return root / "itstep-mystat-mcp"
+
+
+def default_root() -> Path:
+    """Base directory for relative paths and for the implicit ``.env``."""
+    return PROJECT_ROOT if PROJECT_ROOT is not None else app_config_dir()
+
+
+def default_env_candidates() -> list[Path]:
+    """Where ``.env`` is looked up when no explicit path is given.
+
+    Order matters: an explicit project-local file wins over the per-user one,
+    so a development checkout keeps working while an installed tool uses the
+    user profile directory.
+    """
+    candidates = [app_config_dir() / ".env"]
+    if PROJECT_ROOT is not None:
+        candidates.insert(0, PROJECT_ROOT / ".env")
+    return candidates
 
 DEFAULT_BASE_URL = "https://mapi.itstep.org/v1/mystat"
 DEFAULT_LANGUAGE = "uk"
@@ -69,6 +107,7 @@ class Settings:
     max_attachment_size: int
     status_filter: str
     sort: str
+    env_file: Path | None = None
 
     # ---- derived paths -------------------------------------------------
     @property
@@ -90,10 +129,16 @@ class Settings:
     # ---- construction --------------------------------------------------
     @classmethod
     def from_env(cls, env_file: Path | None = None) -> "Settings":
-        root = PROJECT_ROOT
-        env_path = env_file or Path(os.environ.get("MYSTAT_ENV_FILE") or (root / ".env"))
+        root = default_root()
+        if env_file is not None:
+            env_path: Path | None = env_file
+        elif os.environ.get("MYSTAT_ENV_FILE"):
+            env_path = Path(os.environ["MYSTAT_ENV_FILE"])
+        else:
+            env_path = next((path for path in default_env_candidates() if path.is_file()), None)
+
         values: dict[str, str] = {}
-        if env_path.is_file():
+        if env_path is not None and env_path.is_file():
             values = {k: v for k, v in dotenv_values(env_path).items() if v is not None}
 
         def get(*names: str) -> str:
@@ -120,6 +165,7 @@ class Settings:
             max_attachment_size=_as_int(get("MAX_ATTACHMENT_SIZE_MB"), 100) * 1024 * 1024,
             status_filter=get("MYSTAT_STATUS_FILTER") or DEFAULT_STATUS_FILTER,
             sort=get("MYSTAT_SORT") or DEFAULT_SORT,
+            env_file=env_path,
         )
         settings.validate()
         return settings
@@ -138,7 +184,8 @@ class Settings:
         if not self.has_credentials:
             raise ConfigError(
                 "MYSTAT_LOGIN and MYSTAT_PASSWORD are not set; "
-                "put them in .env next to server.py"
+                "run `itstep-mystat-mcp setup` or put them in the .env file "
+                f"({self.env_file or default_env_candidates()[0]})"
             )
 
     def ensure_directories(self) -> None:
