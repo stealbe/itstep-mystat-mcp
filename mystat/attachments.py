@@ -271,42 +271,50 @@ async def download_attachment(
     disposition: str | None = None
     current_url = url
 
+    response: httpx.Response | None = None
     try:
-        async with client.stream("GET", current_url, follow_redirects=False) as response:
-            redirects = 0
-            while response.is_redirect:
-                redirects += 1
-                if redirects > MAX_REDIRECTS:
-                    raise DownloadError("too many redirects")
-                location = response.headers.get("location", "")
-                if not location:
-                    raise DownloadError("redirect without location")
-                current_url = await validate_url(str(response.url.join(location)), resolver=resolver)
-                response = await client.send(
-                    client.build_request("GET", current_url), stream=True, follow_redirects=False
-                )
-            if response.status_code != 200:
-                raise DownloadError(f"HTTP {response.status_code}")
-            content_type = response.headers.get("content-type")
-            disposition = response.headers.get("content-disposition")
-            declared_length = response.headers.get("content-length")
-            if declared_length and declared_length.isdigit() and int(declared_length) > max_size:
-                raise DownloadError(f"file too large: {declared_length} bytes")
-            with tmp_path.open("wb") as handle:
-                async for chunk in response.aiter_bytes(CHUNK_SIZE):
-                    total += len(chunk)
-                    if total > max_size:
-                        raise DownloadError(f"file exceeds limit of {max_size} bytes")
-                    digest.update(chunk)
-                    if len(head) < 512:
-                        head.extend(chunk[: 512 - len(head)])
-                    handle.write(chunk)
+        for redirects in range(MAX_REDIRECTS + 1):
+            response = await client.send(client.build_request("GET", current_url), stream=True)
+            if not response.is_redirect:
+                break
+            location = response.headers.get("location", "")
+            previous_url = str(response.url)
+            await response.aclose()
+            response = None
+            if not location:
+                raise DownloadError("redirect without location")
+            current_url = await validate_url(
+                str(httpx.URL(previous_url).join(location)), resolver=resolver
+            )
+        else:
+            raise DownloadError("too many redirects")
+
+        assert response is not None
+        if response.status_code != 200:
+            raise DownloadError(f"HTTP {response.status_code}")
+        content_type = response.headers.get("content-type")
+        disposition = response.headers.get("content-disposition")
+        declared_length = response.headers.get("content-length")
+        if declared_length and declared_length.isdigit() and int(declared_length) > max_size:
+            raise DownloadError(f"file too large: {declared_length} bytes")
+        with tmp_path.open("wb") as handle:
+            async for chunk in response.aiter_bytes(CHUNK_SIZE):
+                total += len(chunk)
+                if total > max_size:
+                    raise DownloadError(f"file exceeds limit of {max_size} bytes")
+                digest.update(chunk)
+                if len(head) < 512:
+                    head.extend(chunk[: 512 - len(head)])
+                handle.write(chunk)
     except httpx.HTTPError as exc:
         tmp_path.unlink(missing_ok=True)
         raise DownloadError(f"{type(exc).__name__}: {exc}") from exc
     except Exception:
         tmp_path.unlink(missing_ok=True)
         raise
+    finally:
+        if response is not None:
+            await response.aclose()
 
     raw_name = parse_content_disposition(disposition)
     if not raw_name:
