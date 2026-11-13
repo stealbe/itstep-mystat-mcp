@@ -17,11 +17,12 @@ import asyncio
 import getpass
 import json
 import os
+import shutil
 import sys
 from pathlib import Path
 
 from . import __version__
-from .clients import AVAILABLE, detect_clients, manual_snippet, register
+from .clients import AVAILABLE, Change, detect_clients, manual_snippet, register, verify_registrations, _run_cli, SERVER_NAME
 from .config import Settings, app_config_dir, ConfigError
 
 DEFAULT_ENV = app_config_dir() / ".env"
@@ -220,14 +221,46 @@ def cmd_setup(args: argparse.Namespace) -> int:
         print("No clients selected; skipping MCP registration.")
         return 0
 
-    print("\nRegistering MCP server:")
+    # --reinstall: remove existing entries first (where supported)
+    if args.reinstall:
+        for name in clients:
+            if name == "opencode":
+                _run_cli(["opencode", "mcp", "remove", SERVER_NAME], timeout=30)
+            elif name == "claude-code":
+                _run_cli([shutil.which("claude"), "mcp", "remove", SERVER_NAME], timeout=30)
+            elif name == "codex":
+                _run_cli(["codex", "mcp", "remove", SERVER_NAME], timeout=30)
+            # claude-desktop has no CLI remove; file fallback handles it.
+
+    # Determine which clients to actually register, based on --registration
+    strategy = args.registration  # "auto" | "cli" | "file"
+
+    print("\nRegistering MCP server (strategy: {})".format(strategy))
+
+    # Phase 1: perform the registration(s)
+    raw_changes = register(clients)
+
+    # Phase 2: verify via mcp list (for CLI-registered servers)
+    if strategy in ("auto", "cli"):
+        verified_changes = verify_registrations(clients)
+    else:
+        # file‑only strategy: mark as unverified (they were written directly)
+        verified_changes = []
+        for c in raw_changes:
+            verified_changes.append(Change(
+                client=c.client, path=c.path, ok=c.ok,
+                method="file", verified=False, detail=c.detail))
+
+    # Phase 3: print results
     failures = 0
-    for change in register(clients):
+    for change in verified_changes:
         print("  " + change.line())
         failures += 0 if change.ok else 1
-    if failures:
-        print("\nCould not register everywhere. Add this snippet manually:\n")
+
+    if failures and strategy == "cli":
+        print("\nCould not register everywhere via CLI. Add this snippet manually:\n")
         print(manual_snippet())
+
     print("\nDone. Restart the client (or reload its window) to pick up the server.")
     return 0
 
@@ -380,6 +413,11 @@ def build_parser() -> argparse.ArgumentParser:
     setup.add_argument("--cache-dir", help="cache directory (default: next to the config)")
     setup.add_argument("--client", action="append", choices=[*AVAILABLE, "auto", "all", "none"],
                        help="target client; repeatable (default: auto-detect)")
+    setup.add_argument("--registration", choices=["auto", "cli", "file"],
+                       default="auto",
+                       help="registration strategy: auto try CLI first, cli abort on failure, file only (default: auto)")
+    setup.add_argument("--reinstall", action="store_true",
+                       help="remove any existing server entry before re‑adding via CLI")
     setup.add_argument("--verify", dest="verify", action="store_true", default=True,
                        help="verify the credentials with a real login (default)")
     setup.add_argument("--no-verify", dest="verify", action="store_false")

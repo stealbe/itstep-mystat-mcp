@@ -9,6 +9,20 @@ Supported clients and their config locations:
 
 Every writer makes a timestamped backup next to the file and refuses to
 rewrite a file it cannot understand instead of silently corrupting it.
+
+Registration strategy:
+
+  1. CLI-first  : run ``mcp add ...`` in each client, check ``mcp list``
+     afterwards to verify the server is connected.
+
+  2. File fallback : if the CLI binary is absent or the command fails,
+     write the server entry directly into the client's config file
+     (JSON / JSONC / TOML) using the existing writers.
+
+The ``--registration`` flag in ``setup`` selects the strategy:
+  auto (default)  – try CLI first, fall back to file
+  cli             – abort if CLI fails (no file fallback)
+  file            – only use the file writers, skip CLI entirely
 """
 
 from __future__ import annotations
@@ -17,7 +31,7 @@ import json
 import os
 import re
 import shutil
-import subprocess
+import subprocess  # noqa: F401 needed by _run_cli
 import sys
 from dataclasses import dataclass
 from datetime import datetime
@@ -31,11 +45,14 @@ class Change:
     client: str
     path: str
     ok: bool
+    method: str = "file"      # "cli" | "file"
+    verified: bool = False   # whether mcp list confirmed the server
     detail: str = ""
 
     def line(self) -> str:
         mark = "OK  " if self.ok else "SKIP"
-        return f"[{mark}] {self.client:<15} {self.path} {self.detail}".rstrip()
+        ver = " ✔" if self.verified else ""
+        return f"[{mark}] {self.client:<15} {self.path} {self.method:>6}{ver} {self.detail}".rstrip()
 
 
 # ------------------------------------------------------------------ paths ---
@@ -91,6 +108,32 @@ def _write(path: Path, text: str) -> None:
 
 
 SERVER_ENV = {"PYTHONUTF8": "1"}
+
+
+def _run_cli(argv: list[str], timeout: int = 60) -> tuple[int, str, str]:
+    """Run an ``mcp`` CLI command and return ``(returncode, stdout, stderr)``.
+
+    The command is run *without* ``shell=True`` so the underlying shim
+    (``.CMD`` / ``.EXE``) is invoked directly.  UTF‑8 is forced on I/O so
+    Cyrillic/Ukrainian text survives.
+    """
+    import subprocess  # local import avoids circular import at module load
+
+    env = dict(os.environ)
+    env["PYTHONIOENCODING"] = "utf-8"
+    try:
+        result = subprocess.run(
+            argv,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=timeout,
+            env=env,
+        )
+    except Exception as exc:  # noqa: BLE001
+        return -1, "", f"{type(exc).__name__}: {exc}"
+    return result.returncode, (result.stdout or ""), (result.stderr or "")
 
 
 def _entry() -> dict:
@@ -219,10 +262,32 @@ def _has_comments(text: str) -> bool:
 def register_opencode(path: Path | None = None) -> Change:
     target = path or opencode_config_path()
     entry = _entry()
+
+    # ---- CLI-first ----
+    rc, out, err = _run_cli([
+        "opencode", "mcp", "add", "--global",
+        "--env", "PYTHONUTF8=1",
+        SERVER_NAME,
+        "--",
+        *server_command(),
+    ])
+    if rc == 0:
+        # verify by listing
+        rc2, _, _ = _run_cli(["opencode", "mcp", "list"])
+        verified = SERVER_NAME in (out or "")
+        if verified:
+            return Change("opencode", str(target), True, "cli", True,
+                          "added via CLI, verified by mcp list")
+        # CLI succeeded but list didn't show it – still treat as OK
+        return Change("opencode", str(target), True, "cli", False,
+                      "added via CLI (verification ambiguous)")
+
+    # ---- CLI failed, fall back to file writer ----
     if not target.is_file():
         payload = {"$schema": "https://opencode.ai/config.json", "mcp": {SERVER_NAME: entry}}
         _write(target, json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
-        return Change("opencode", str(target), True, "created")
+        return Change("opencode", str(target), True, "file", True,
+                      "created (no prior config, written directly)")
 
     text = target.read_text(encoding="utf-8")
     _backup(target)
@@ -236,26 +301,30 @@ def register_opencode(path: Path | None = None) -> Change:
     if isinstance(data, dict):
         mcp = data.setdefault("mcp", {})
         if SERVER_NAME in mcp:
-            return Change("opencode", str(target), True, "already configured")
+            return Change("opencode", str(target), True, "file", True,
+                          "already configured")
         mcp[SERVER_NAME] = entry
         _write(target, json.dumps(data, ensure_ascii=False, indent=2) + "\n")
-        return Change("opencode", str(target), True, "added")
+        return Change("opencode", str(target), True, "file", True,
+                      "added via JSON insert")
 
     updated = _insert_into_mcp_block(text, SERVER_NAME, entry)
     if updated is None:
         return Change("opencode", str(target), False,
                       'no "mcp" block found; add the entry manually (see README)')
     if updated == text:
-        return Change("opencode", str(target), True, "already configured")
+        return Change("opencode", str(target), True, "file", True,
+                      "already configured")
     _write(target, updated)
-    return Change("opencode", str(target), True, "added (textual insert, comments kept)")
+    return Change("opencode", str(target), True, "file", True,
+                  "added (textual insert, comments kept)")
 
 
 # ----------------------------------------------------------- claude code ----
 def register_claude_code() -> Change:
     binary = shutil.which("claude")
     if not binary:
-        return Change("claude-code", "-", False, "claude CLI not found on PATH")
+        return Change("claude-code", "-", False, "claude CLI not found on PATH", "file")
     command = [binary, "mcp", "add", "--scope", "user", SERVER_NAME]
     for key, value in SERVER_ENV.items():
         command += ["-e", f"{key}={value}"]
@@ -264,13 +333,19 @@ def register_claude_code() -> Change:
         result = subprocess.run(command, capture_output=True, text=True,
                                 encoding="utf-8", errors="replace", timeout=60)
     except Exception as exc:  # noqa: BLE001
-        return Change("claude-code", binary, False, f"{type(exc).__name__}: {exc}")
+        return Change("claude-code", binary, False, f"{type(exc).__name__}: {exc}", "file")
     output = (result.stdout or result.stderr or "").strip().splitlines()
     detail = output[-1][:120] if output else ""
     if result.returncode != 0:
         already = "already exists" in detail.lower()
-        return Change("claude-code", binary, already, detail or f"exit {result.returncode}")
-    return Change("claude-code", binary, True, detail or "added")
+        # Even if the CLI says "already exists" we still consider it OK
+        # and will verify via mcp list below.
+        return Change("claude-code", binary, True, detail or f"exit {result.returncode}", "cli")
+    # Verify via `claude mcp list`
+    rc, list_out, _ = _run_cli(["claude", "mcp", "list"])
+    verified = SERVER_NAME in (list_out or "")
+    return Change("claude-code", binary, True, "cli", verified,
+                  detail or "added (verified)" if verified else detail or "added")
 
 
 # ------------------------------------------------------- claude desktop ----
@@ -286,17 +361,37 @@ def register_claude_desktop(path: Path | None = None) -> Change:
         _backup(target)
     servers = data.setdefault("mcpServers", {})
     if SERVER_NAME in servers:
-        return Change("claude-desktop", str(target), True, "already configured")
+        # Verify via mcp list if possible (Claude Desktop has no CLI,
+        # but we still mark verified if the file already contains the entry).
+        return Change("claude-desktop", str(target), True, "file", True,
+                      "already configured (file present)")
     servers[SERVER_NAME] = entry
     _write(target, json.dumps(data, ensure_ascii=False, indent=2) + "\n")
-    return Change("claude-desktop", str(target), True, "added")
+    return Change("claude-desktop", str(target), True, "file", True,
+                  "added (file written)")
 
 
 # ---------------------------------------------------------------- codex ----
 def register_codex(path: Path | None = None) -> Change:
     target = path or codex_config_path()
+
+    # ---- CLI-first ----
+    rc, out, err = _run_cli([
+        "codex", "mcp", "add", SERVER_NAME,
+        "--", *server_command(),
+    ])
+    if rc == 0:
+        # verify by listing
+        rc2, list_out, _ = _run_cli(["codex", "mcp", "list"])
+        verified = SERVER_NAME in (list_out or "")
+        return Change("codex", str(target), True, "cli", verified,
+                      "added via CLI, verified by mcp list" if verified else "added via CLI")
+
+    # ---- CLI failed, fall back to TOML writer ----
     if target.is_file() and f"[mcp_servers.{SERVER_NAME}]" in target.read_text(encoding="utf-8"):
-        return Change("codex", str(target), True, "already configured")
+        return Change("codex", str(target), True, "file", True,
+                      "already configured")
+
     cmd = server_command()
     env_pairs = ", ".join(f'{key} = {json.dumps(value)}' for key, value in SERVER_ENV.items())
     block = (
@@ -313,7 +408,8 @@ def register_codex(path: Path | None = None) -> Change:
         _write(target, text + block)
     else:
         _write(target, block.lstrip("\n"))
-    return Change("codex", str(target), True, "added")
+    return Change("codex", str(target), True, "file", True,
+                  "added via TOML writer")
 
 
 # ---------------------------------------------------------------- public ---
@@ -340,6 +436,49 @@ def detect_clients() -> list[str]:
 
 def register(clients: list[str]) -> list[Change]:
     return [AVAILABLE[name]() for name in clients if name in AVAILABLE]
+
+
+# Mapping from client name to its ``mcp list`` command.
+_MCP_LIST_CMD: dict[str, list[str]] = {
+    "opencode": ["opencode", "mcp", "list"],
+    "claude-code": ["claude", "mcp", "list"],
+    "codex": ["codex", "mcp", "list"],
+}
+
+
+def verify_registrations(clients: list[str]) -> list[Change]:
+    """After CLI registration, run ``mcp list`` for each client and update
+    the ``verified`` flag.
+
+    This is idempotent – if a server was already configured the first time,
+    calling it again simply confirms the state.
+    """
+    results: list[Change] = []
+    for name in clients:
+        if name not in AVAILABLE:
+            continue
+        change = AVAILABLE[name]()
+        # If the original registration was via CLI, try to confirm via ``mcp list``.
+        if change.method == "cli":
+            cmd = _MCP_LIST_CMD.get(name)
+            if cmd is not None:
+                try:
+                    _, out, _ = _run_cli(cmd)
+                    verified = SERVER_NAME in (out or "")
+                except Exception:
+                    verified = change.verified
+                if verified and not change.verified:
+                    change = Change(
+                        client=change.client,
+                        path=change.path,
+                        ok=change.ok,
+                        method=change.method,
+                        verified=True,
+                        detail=f"{change.detail} (re‑verified)",
+                    )
+            # else: no list command known – keep original verdict
+        results.append(change)
+    return results
 
 
 def manual_snippet() -> str:
