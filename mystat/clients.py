@@ -165,12 +165,22 @@ def _insert_into_mcp_block(text: str, name: str, entry: dict) -> str | None:
         i += 1
     if depth:
         return None
-    body = json.dumps({name: entry}, ensure_ascii=False, indent=2)[1:-1].strip()
-    insertion = "\n" + body + ",\n"
+
+    # Keep the entry visually nested under "mcp": the JSON serializer emits
+    # two-space indentation, so shift every line by the indentation of the
+    # `"mcp"` key itself plus two spaces.
+    line_start = text.rfind("\n", 0, match.start()) + 1
+    key_indent = text[line_start:match.start()]
+    if key_indent.strip():
+        key_indent = ""
+    inner_indent = key_indent
+    lines = json.dumps({name: entry}, ensure_ascii=False, indent=2).splitlines()[1:-1]
+    body = "\n".join(inner_indent + line for line in lines)
+
     head, tail = text[:start], text[start:]
     if tail.lstrip().startswith("}"):
-        return head + "\n" + body + "\n" + tail
-    return head + insertion + tail
+        return head + "\n" + body + "\n" + key_indent + tail.lstrip()
+    return head + "\n" + body + ",\n" + tail
 
 
 def _has_comments(text: str) -> bool:
