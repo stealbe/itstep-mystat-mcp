@@ -97,6 +97,7 @@ OpenCode, `~/.config/opencode/opencode.jsonc`:
   "itstep-mystat": {
     "type": "local",
     "command": ["C:\\Users\\<you>\\AppData\\Local\\uv\\tools\\itstep-mystat-mcp\\Scripts\\python.exe", "-m", "mystat"],
+    "environment": { "PYTHONUTF8": "1" },
     "enabled": true,
     "timeout": 180000
   }

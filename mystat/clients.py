@@ -90,12 +90,21 @@ def _write(path: Path, text: str) -> None:
     tmp.replace(path)
 
 
+SERVER_ENV = {"PYTHONUTF8": "1"}
+
+
 def _entry() -> dict:
-    return {"type": "local", "command": server_command(), "enabled": True, "timeout": 180000}
+    return {
+        "type": "local",
+        "command": server_command(),
+        "environment": dict(SERVER_ENV),
+        "enabled": True,
+        "timeout": 180000,
+    }
 
 
 def _json_entry() -> dict:
-    return {"command": server_command(), "args": [], "env": {"PYTHONUTF8": "1"}}
+    return {"command": server_command(), "args": [], "env": dict(SERVER_ENV)}
 
 
 # --------------------------------------------------------------- opencode ---
@@ -247,9 +256,13 @@ def register_claude_code() -> Change:
     binary = shutil.which("claude")
     if not binary:
         return Change("claude-code", "-", False, "claude CLI not found on PATH")
-    command = [binary, "mcp", "add", "--scope", "user", SERVER_NAME, "--", *server_command()]
+    command = [binary, "mcp", "add", "--scope", "user", SERVER_NAME]
+    for key, value in SERVER_ENV.items():
+        command += ["-e", f"{key}={value}"]
+    command += ["--", *server_command()]
     try:
-        result = subprocess.run(command, capture_output=True, text=True, timeout=60)
+        result = subprocess.run(command, capture_output=True, text=True,
+                                encoding="utf-8", errors="replace", timeout=60)
     except Exception as exc:  # noqa: BLE001
         return Change("claude-code", binary, False, f"{type(exc).__name__}: {exc}")
     output = (result.stdout or result.stderr or "").strip().splitlines()
@@ -285,11 +298,12 @@ def register_codex(path: Path | None = None) -> Change:
     if target.is_file() and f"[mcp_servers.{SERVER_NAME}]" in target.read_text(encoding="utf-8"):
         return Change("codex", str(target), True, "already configured")
     cmd = server_command()
+    env_pairs = ", ".join(f'{key} = {json.dumps(value)}' for key, value in SERVER_ENV.items())
     block = (
         f"\n[mcp_servers.{SERVER_NAME}]\n"
         f'command = {json.dumps(cmd[0])}\n'
         f"args = {json.dumps(cmd[1:])}\n"
-        f'env = {{ PYTHONUTF8 = "1" }}\n'
+        f"env = {{ {env_pairs} }}\n"
     )
     if target.is_file():
         _backup(target)

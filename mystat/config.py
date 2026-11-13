@@ -139,7 +139,14 @@ class Settings:
 
         values: dict[str, str] = {}
         if env_path is not None and env_path.is_file():
-            values = {k: v for k, v in dotenv_values(env_path).items() if v is not None}
+            # python-dotenv already defaults to UTF-8, but the encoding is
+            # pinned here so Cyrillic/Ukrainian credentials stay readable even
+            # if that default changes, and so it matches how `setup` writes it.
+            values = {
+                k: v
+                for k, v in dotenv_values(env_path, encoding="utf-8").items()
+                if v is not None
+            }
 
         def get(*names: str) -> str:
             for name in names:

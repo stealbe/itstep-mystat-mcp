@@ -28,12 +28,34 @@ DEFAULT_ENV = app_config_dir() / ".env"
 
 
 # ------------------------------------------------------------------- utils ---
+def _ensure_utf8_streams() -> None:
+    """Force UTF-8 on the console streams.
+
+    Windows picks the codec itself: an attached console uses the console code
+    page (866 on a Russian system) and a redirected stream uses the ANSI code
+    page (1251). Neither is stable across machines, and cp866 has no Ukrainian
+    letters (і, ї, є, ґ) at all, so a log line or a JSON summary could raise
+    ``UnicodeEncodeError``. Pinning UTF-8 makes the bytes deterministic, and
+    ``errors="replace"`` keeps the command alive on a terminal that cannot
+    render a glyph.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is None:
+            continue
+        try:
+            reconfigure(encoding="utf-8", errors="replace")
+        except (ValueError, OSError):  # detached or non-reconfigurable stream
+            pass
+
+
 def _read_env(path: Path) -> dict[str, str]:
     from dotenv import dotenv_values
 
     if not path.is_file():
         return {}
-    return {k: v for k, v in dotenv_values(path).items() if v is not None}
+    values = dotenv_values(path, encoding="utf-8")
+    return {k: v for k, v in values.items() if v is not None}
 
 
 def _write_env(path: Path, values: dict[str, str]) -> None:
@@ -315,6 +337,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    _ensure_utf8_streams()
     parser = build_parser()
     args = parser.parse_args(argv)
     if not getattr(args, "command", None):

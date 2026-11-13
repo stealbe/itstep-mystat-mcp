@@ -26,8 +26,29 @@ from .homework import HomeworkService
 logger = logging.getLogger("mystat")
 
 
+def force_utf8_streams() -> None:
+    """Switch the console text layers to UTF-8.
+
+    The MCP transport already writes UTF-8 on its own (``mcp.server.stdio``
+    re-wraps the binary buffers), but ``sys.stderr`` used by our handlers and
+    ``sys.stdout`` used by the CLI follow the Windows console code page (866)
+    or the ANSI code page (1251) when redirected. cp866 has no Ukrainian
+    letters (і, ї, є, ґ), so logging a Ukrainian theme name or printing a JSON
+    summary could otherwise raise ``UnicodeEncodeError``.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is None:
+            continue
+        try:
+            reconfigure(encoding="utf-8", errors="replace")
+        except (ValueError, OSError):
+            pass
+
+
 def configure_logging(settings: Settings) -> None:
     settings.logs_dir.mkdir(parents=True, exist_ok=True)
+    force_utf8_streams()
     root = logging.getLogger()
     root.setLevel(logging.INFO)
     for handler in list(root.handlers):
@@ -195,6 +216,7 @@ async def homework_cache_status() -> dict[str, Any]:
 
 
 def main() -> None:
+    force_utf8_streams()
     mcp.run(transport="stdio")
 
 
