@@ -1,11 +1,44 @@
+# ---- secrets -------------------------------------------------------------
 .env
 .env.*
 !.env.example
+.token
+.token.*
 
+# ---- local state and caches ---------------------------------------------
 cache/
 logs/
-.venv/
+*.log
+*.db
+*.db-wal
+*.db-shm
+*.part
+
+# ---- python --------------------------------------------------------------
 __pycache__/
-*.pyc
+*.py[cod]
+*.egg-info/
+build/
+dist/
 .pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
+
+# ---- virtual environments ------------------------------------------------
+.venv/
+.venv*/
+venv/
+
+# ---- editors and OS ------------------------------------------------------
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ---- leftovers -----------------------------------------------------------
 uv.lock.bak
