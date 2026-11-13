@@ -142,19 +142,32 @@ class Settings:
             # python-dotenv already defaults to UTF-8, but the encoding is
             # pinned here so Cyrillic/Ukrainian credentials stay readable even
             # if that default changes, and so it matches how `setup` writes it.
+            #
+            # interpolate=False is not cosmetic: python-dotenv substitutes
+            # ${VAR} even inside quotes, so a password containing "${...}"
+            # would silently become something else.
             values = {
                 k: v
-                for k, v in dotenv_values(env_path, encoding="utf-8").items()
+                for k, v in dotenv_values(
+                    env_path, encoding="utf-8", interpolate=False
+                ).items()
                 if v is not None
             }
 
-        def get(*names: str) -> str:
+        def get(*names: str, strip: bool = True) -> str:
+            """First non-empty value from the .env file, then the environment.
+
+            ``strip=False`` is used for credentials: trimming them would
+            silently change a password that legitimately starts or ends with a
+            space (a paste artefact, but also a legal character).
+            """
             for name in names:
                 raw = values.get(name)
                 if raw is None:
                     raw = os.environ.get(name)
-                if raw is not None and raw.strip():
-                    return raw.strip()
+                if raw is None or not raw.strip():
+                    continue
+                return raw.strip() if strip else raw
             return ""
 
         cache_dir = _resolve(get("CACHE_DIR") or "./cache", root)
@@ -163,8 +176,8 @@ class Settings:
         settings = cls(
             base_url=(get("MYSTAT_BASE_URL") or DEFAULT_BASE_URL).rstrip("/"),
             language=get("MYSTAT_LANGUAGE") or DEFAULT_LANGUAGE,
-            login=get("MYSTAT_LOGIN", "LOGIN"),
-            password=get("MYSTAT_PASSWORD", "PASSWORD"),
+            login=get("MYSTAT_LOGIN", "LOGIN", strip=False),
+            password=get("MYSTAT_PASSWORD", "PASSWORD", strip=False),
             cache_dir=cache_dir,
             database_path=database_path,
             sync_limit=_as_int(get("SYNC_LIMIT"), 1000),
