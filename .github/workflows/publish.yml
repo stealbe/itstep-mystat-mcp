@@ -1,0 +1,46 @@
+name: publish
+
+# Trusted Publishing (OIDC): no API token is stored in the repository.
+# PyPI must be configured with:
+#   owner      = stealbe
+#   repository = itstep-mystat-mcp
+#   workflow   = publish.yml
+#   environment= pypi
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: build sdist and wheel
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10
+        with:
+          python-version: "3.13"
+      - name: Build
+        run: uv build
+      - uses: actions/upload-artifact@v7
+        with:
+          name: dist
+          path: dist/
+          if-no-files-found: error
+
+  publish:
+    name: publish to PyPI
+    needs: build
+    runs-on: ubuntu-latest
+    # Must match the "Environment name" of the pending publisher on PyPI.
+    environment: pypi
+    permissions:
+      # Required for OIDC: without this the action cannot obtain a token.
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: dist
+          path: dist/
+      - name: Publish
+        uses: pypa/gh-action-pypi-publish@release/v1
