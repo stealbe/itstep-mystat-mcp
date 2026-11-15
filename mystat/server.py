@@ -117,7 +117,7 @@ async def lifespan(server: MCPServer) -> AsyncIterator[AppContext]:
 
 mcp = MCPServer(
     name="itstep-mystat",
-    version="0.1.1",
+    version="0.2.0",
     instructions=(
         "Access to ITStep MyStat homework. Call homework_sync once to mirror the "
         "account, then use homework_list / homework_get / homework_search / "
