@@ -117,7 +117,7 @@ async def lifespan(server: MCPServer) -> AsyncIterator[AppContext]:
 
 mcp = MCPServer(
     name="itstep-mystat",
-    version="0.1.0",
+    version="0.1.1",
     instructions=(
         "Access to ITStep MyStat homework. Call homework_sync once to mirror the "
         "account, then use homework_list / homework_get / homework_search / "
@@ -211,6 +211,29 @@ async def homework_cache_status() -> dict[str, Any]:
     ctx = app()
     try:
         return await ctx.homework.cache_status()
+    except Exception as exc:  # noqa: BLE001
+        raise _fail(exc) from exc
+
+
+@mcp.tool(name="homework_fetch_list", description="Fetch a fresh homework list from the MyStat API with pagination headers. Does not touch the local cache.")
+async def homework_fetch_list(
+    limit: int | None = None,
+    status: str | None = None,
+    sort: str | None = None,
+    page: int | None = None,
+) -> dict[str, Any]:
+    ctx = app()
+    try:
+        return await ctx.homework.fetch_list(limit=limit, status=status, sort=sort, page=page)
+    except Exception as exc:  # noqa: BLE001
+        raise _fail(exc) from exc
+
+
+@mcp.tool(name="homework_fetch_detail", description="Fetch a single homework's full detail from the MyStat API by ID. Does not touch the local cache.")
+async def homework_fetch_detail(homework_id: str) -> dict[str, Any]:
+    ctx = app()
+    try:
+        return await ctx.homework.fetch_detail(homework_id)
     except Exception as exc:  # noqa: BLE001
         raise _fail(exc) from exc
 

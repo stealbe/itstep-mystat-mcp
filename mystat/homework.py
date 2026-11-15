@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
-from .api import ApiError, ApiNotFoundError, MyStatAPI
+from .api import ApiError, ApiNotFoundError, MyStatAPI, PaginatedList
 from .attachments import (
     AttachmentRef,
     collect_attachment_refs,
@@ -205,8 +205,11 @@ class HomeworkService:
             raise RuntimeError("sync already in progress")
         async with self._sync_lock:
             summary = SyncSummary(started_at=_now())
-            payload = await self.api.get_homework_list()
-            items = [item for item in (payload.get("data") or []) if isinstance(item, dict)]
+            result = await self.api.get_homework_list()
+            if isinstance(result, PaginatedList):
+                items = result.items
+            else:
+                items = [item for item in (result.get("data") or []) if isinstance(item, dict)]
             summary.found = len(items)
 
             semaphore = asyncio.Semaphore(SYNC_CONCURRENCY)
@@ -229,6 +232,43 @@ class HomeworkService:
                 summary.attachments_downloaded, len(summary.errors),
             )
             return summary.as_dict()
+
+    # ---- fresh API fetch ------------------------------------------------
+    async def fetch_list(
+        self,
+        *,
+        limit: int | None = None,
+        status: str | None = None,
+        sort: str | None = None,
+        page: int | None = None,
+    ) -> dict[str, Any]:
+        """Fetch a fresh homework list from the MyStat API with pagination info.
+
+        Wraps :meth:`MyStatAPI.get_homework_list` and returns both the payload
+        and the pagination headers. Does not touch the local cache.
+        """
+        paginated = await self.api.get_homework_list(
+            limit=limit, status=status, sort=sort, page=page
+        )
+        return {
+            "data": paginated.data,
+            "items": paginated.items,
+            "pagination": {
+                "total_count": paginated.total_count,
+                "page_count": paginated.page_count,
+                "current_page": paginated.current_page,
+                "per_page": paginated.per_page,
+                "x_reset_cache": paginated.x_reset_cache,
+                "x_l_session": paginated.x_l_session,
+            },
+        }
+
+    async def fetch_detail(self, homework_id: str | int) -> Any:
+        """Fetch a single homework's full detail from the MyStat API.
+
+        Reuses :meth:`MyStatAPI.get_homework_detail`. Does not touch the cache.
+        """
+        return await self.api.get_homework_detail(homework_id)
 
     async def _sync_item(
         self,

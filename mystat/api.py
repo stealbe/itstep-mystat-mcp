@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from dataclasses import dataclass, field
 from typing import Any
 
 import httpx
@@ -41,6 +42,25 @@ class ApiAuthError(ApiError):
 
 class ApiNotFoundError(ApiError):
     pass
+
+
+@dataclass(slots=True)
+class PaginatedList:
+    """Homework list payload plus pagination headers from the API response."""
+
+    data: dict[str, Any]
+    total_count: int | None = None
+    page_count: int | None = None
+    current_page: int | None = None
+    per_page: int | None = None
+    x_reset_cache: str | None = None
+    x_l_session: str | None = None
+
+    @property
+    def items(self) -> list[Any]:
+        """The homework items array from the payload."""
+        raw = self.data.get("data") or []
+        return [item for item in raw if isinstance(item, dict)]
 
 
 class MyStatAPI:
@@ -159,11 +179,19 @@ class MyStatAPI:
         status: str | None = None,
         sort: str | None = None,
         page: int | None = None,
-    ) -> dict[str, Any]:
+    ) -> PaginatedList:
+        """Fetch the homework list from the API with pagination info.
+
+        Defaults match the public endpoint contract:
+        ``sort=-hw.time``, ``status=1``, ``limit=1000``.
+
+        Pagination headers are captured from the response and exposed
+        through the returned :class:`PaginatedList`.
+        """
         params: dict[str, Any] = {
-            "sort": sort or self.settings.sort,
-            "status": status if status is not None else self.settings.status_filter,
-            "limit": limit or self.settings.sync_limit,
+            "sort": sort or "-hw.time",
+            "status": status if status is not None else "1",
+            "limit": limit if limit is not None else 1000,
         }
         if page is not None:
             params["page"] = page
@@ -171,7 +199,16 @@ class MyStatAPI:
         payload = response.json()
         if not isinstance(payload, dict):
             raise ApiError("unexpected homework list payload shape")
-        return payload
+        headers = response.headers
+        return PaginatedList(
+            data=payload,
+            total_count=_as_int_header(headers.get("X-Pagination-Total-Count")),
+            page_count=_as_int_header(headers.get("X-Pagination-Page-Count")),
+            current_page=_as_int_header(headers.get("X-Pagination-Current-Page")),
+            per_page=_as_int_header(headers.get("X-Pagination-Per-Page")),
+            x_reset_cache=headers.get("x-reset-cache"),
+            x_l_session=headers.get("X-L-Session"),
+        )
 
     async def get_homework_detail(self, homework_id: str | int) -> Any:
         response = await self.request("GET", f"/od/homework/{homework_id}")
@@ -187,6 +224,16 @@ def _retry_after_seconds(response: httpx.Response) -> float:
         except ValueError:
             delay = 2.0
     return max(0.0, min(delay, MAX_RETRY_AFTER_SECONDS))
+
+
+def _as_int_header(value: str | None) -> int | None:
+    """Parse an int from a response header, returning ``None`` when absent."""
+    if value is None:
+        return None
+    try:
+        return int(value.strip())
+    except (ValueError, AttributeError):
+        return None
 
 
 def _safe_body(response: httpx.Response) -> str:
