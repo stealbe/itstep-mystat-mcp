@@ -121,7 +121,9 @@ mcp = MCPServer(
     instructions=(
         "Access to ITStep MyStat homework. Call homework_sync once to mirror the "
         "account, then use homework_list / homework_get / homework_search / "
-        "homework_read_file. Tokens and passwords are never returned."
+        "homework_read_file. Tokens and passwords are never returned.\n\n"
+        "Homework status filter values: status=0 means not completed, "
+        "status=1 means completed."
     ),
     lifespan=lifespan,
     log_level="INFO",
