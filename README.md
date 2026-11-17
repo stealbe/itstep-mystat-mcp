@@ -10,9 +10,7 @@
 ## Быстрый старт
 
 ```powershell
-uv tool install itstep-mystat-mcp          # из индекса (когда опубликован)
-# или из локальной папки проекта:
-uv tool install .
+uv tool install itstep-mystat-mcp         
 
 itstep-mystat-mcp setup                    # логин/пароль + авто-регистрация в клиентах
 ```
